@@ -5,6 +5,7 @@ token=""
 login=$USER
 token_file=~/.token
 since=""
+finalize=false
 
 usage() {
     echo ""
@@ -28,7 +29,7 @@ error() {
 }
 
 shortopts="l:t:f:s:h"
-longopts="login:,token:,token_file:,since:,help"
+longopts="login:,token:,token_file:,since:,help,finalize"
 
 opts=$(getopt --options "$shortopts" --long "$longopts" --name "$0" -- "$@")
 eval set -- "$opts"
@@ -40,6 +41,7 @@ while true; do
         -f | --token_file ) token_file=$2; shift 2;;
         -s | --since ) since=$2; shift 2;;
         -h | --help ) usage; shift 1;;
+        --finalize ) finalize=true; shift 1;;
         -- ) shift; break;;
         * ) error "Failed to parse options";;
     esac
@@ -62,6 +64,11 @@ proj_num=$1
 if [[ -z "$since" ]]; then
     since=$(date -d "-14 days" +%Y-%m-%dT16:00:00)
 fi
+
+old_folder=$(date -d "$since" +./%Y-%m-%d)
+cur_folder=$(date +./%Y-%m-%d)
+
+if [[ $finalize == false ]]; then
 
 echo "Fetching closed since $since issues"
 
@@ -187,9 +194,6 @@ function proj_query {
     echo $q
 }
 
-old_folder=$(date -d "$since" +./%Y-%m-%d)
-cur_folder=$(date +./%Y-%m-%d)
-
 old_sp="??"
 if [[ -d "$old_folder" ]]; then
     if [[ -f "$old_folder/total_sp.txt" ]]; then
@@ -203,9 +207,47 @@ fi
 if [[ -f "$cur_folder/issues.txt" ]]; then
     rm "$cur_folder/issues.txt"
 fi
-if [[ -f "$cur_folder/predemo.txt" ]]; then
-    rm "$cur_folder/predemo.txt"
-fi
+
+cat > "$cur_folder/predemo.txt" <<- EndOfMessage
+# Это предемо. В принципе его уже можно скопировать в слайды.
+# Для копирования markdown в google docs подойдет https://dillinger.io/.
+# Также опционально можно попробовать сгенерировать финальное демо.
+# Прямо сейчас скрипт скорее всего ждет того, что этот файл отредактируют,
+# в любом случае финальный шаг можно повторить, передав скрипту ключ --finalize.
+#
+# Финальный шаг скрипта читает построчно этот файл, генерируюя новый файл с
+# финальным демо.
+# Все строки, начинающиеся с #, пропускаются (кроме строчки про закрытые sp).
+# Пустые строки тоже пропускаются.
+# Строки, начинающиеся с ! рассматриваются как шаблон.
+# В шаблоне должны быть слова и/или фразы, помеченные символом &.
+# Чтобы отметить слово, достаточно написать & перед ним (без пробела), чтобы
+# отметить фразу, надо обернуть ее в конструкцию &(...).
+# Скрипт найдет в шаблоне помеченные таким образом слова/фразы и заменит
+# их на markdown ссылки, которые будет искать в файле после этой строки шаблона.
+# Результат будет выведен в финальный файл, в виде markdown строчки списка.
+# Также есть специальный шаблон "!МелочиN" (N - цифра), который подставит один
+# из предопределенных шаблонов с N ссылками.
+# Все остальные строки исходного файла будут переданы в финальный без изменений.
+# Если не удалось распарсить пометку слова/фразы или не удалось найти нужное
+# количество ссылок - оно напечатает ошибку и прекратит работу.
+#
+# Пример подготовленного файла:
+# # this comment will be ignored
+# !Закрыт &тикет и &(другой тикет), которые были сложны.
+# This phrase is omitted by link searcher.
+# * [Title1](https://github.com/issues/1)
+# * [Title2](https://github.com/issues/2)
+# Some other phrase.
+# * [Title3](https://github.com/issues/3)
+#
+# Пример результата:
+# * Закрыт [тикет](https://github.com/issues/1) и [другой тикет](https://github.com/issues/2), которые были сложны.
+# Some other phrase.
+# * [Title3](https://github.com/issues/3)
+################################################################################
+
+EndOfMessage
 
 total_sp=0
 total_count=0
@@ -281,7 +323,7 @@ while true; do
 
         echo "$url" >> "$cur_folder/issues.txt"
 
-        echo "\"$status\" \"$epic\" \"$type\" $estimate \"$labels_str\"" \
+        echo "# \"$status\" \"$epic\" \"$type\" $estimate \"$labels_str\"" \
             >> "$cur_folder/predemo.txt"
         echo "* [$title]($url)" >> "$cur_folder/predemo.txt"
         echo "" >> "$cur_folder/predemo.txt"
@@ -301,15 +343,196 @@ echo $total_sp > "$cur_folder/total_sp.txt"
 echo "# ${total_sp}sp закрыто (в прошлый раз было ${old_sp}sp)" \
     >> "$cur_folder/predemo.txt"
 
-echo "# Suggesting https://dillinger.io/ for conversion of markdown to gdoc" \
-    >> "$cur_folder/predemo.txt"
-
 if kate --version &>/dev/null; then
     kate -b "$cur_folder/predemo.txt" &>/dev/null
 elif gedit --version &>/dev/null; then
     gedit -s "$cur_folder/predemo.txt" &>/dev/null
-else
+elif vi --version &>/dev/null; then
     vi "$cur_folder/predemo.txt"
+else
+    echo "No editor was found! Only predemo was generated."
+    echo "Here it is $cur_folder/predemo.txt"
+    echo "You may edit it as it is described in it and run final stage:"
+    echo "$0 <...> --finalize"
+    exit 1
+fi
+
+fi # if [[ $finalize == false ]]
+
+if ! [[ -f "$cur_folder/predemo.txt" ]]; then
+    error "Required file '$cur_folder/predemo.txt' was not found"
+fi
+
+pre_lines=()
+sp_line=
+while IFS= read -r line; do
+    pattern="^# ([0-9]*)sp закрыто"
+    if [[ "$line" =~ $pattern ]]; then
+        sp_line="$line"
+        continue
+    fi
+    if [[ "$line" =~ ^[[:space:]]*# ]]; then
+        continue
+    fi
+    if [[ "$line" =~ ^[[:space:]]*$ ]]; then
+        continue
+    fi
+    pre_lines+=("$line")
+done < "$cur_folder/predemo.txt"
+
+cat > "$cur_folder/demo.txt" <<- EndOfMessage
+# Для копирования markdown в google docs подойдет https://dillinger.io/.
+################################################################################
+
+EndOfMessage
+
+pregen=()
+pregen+=("Ничего")
+pregen+=("Прочая &мелочь")
+pregen+=("&Пара &мелочей")
+pregen+=("&Несколько &прочих &мелочей")
+pregen+=("&Несколько &разных &прочих &мелочей")
+pregen+=("&Несколько &мелочей &разной &степени &важности")
+pregen+=("&Целый &выводок &разных &небольших &багофиксов и &исправлений")
+pregen+=("&Целый &выводок &разных &прочих &небольших &багофиксов и &исправлений")
+pregen+=("&Огромная &масса &небольших &багофиксов и &исправлений &разной &степени &важности")
+pregen+=("&Огромная &масса &небольших &багофиксов и &исправлений &разной &степени &сложности и &важности")
+
+function subst_count {
+    orig_line="$1"
+    line="$1 "
+    counter=0
+    pattern='^([^&]*)&(.*)$'
+    pattern_check_none='^[,.;[:space:]].*$'
+    pattern_check_phrase='^\(.*$'
+    pattern_word='^([^,.;[:space:]]*)([,.;[:space:]].*)$'
+    pattern_phrase='^\(([^\)]+)\)(.*)$'
+    prefix=""
+    while [[ "$line" =~ $pattern ]]; do
+        left="${BASH_REMATCH[1]}"
+        right="${BASH_REMATCH[2]}"
+        if [[ "$right" =~ $pattern_check_none ]]; then
+            prefix="$prefix$left$"
+            line="$right"
+            continue
+        fi
+
+        if [[ "$right" =~ $pattern_check_phrase ]]; then
+            if ! [[ "$right" =~ $pattern_phrase ]]; then
+                error "Unterminated parentheses sequence: $orig_line"
+            fi
+        elif ! [[ "$right" =~ $pattern_word ]]; then
+            error "Fatal error during word match: $orig_line"
+        fi
+        name="${BASH_REMATCH[1]}"
+        prefix=""
+        line="${BASH_REMATCH[2]}"
+        ((counter++))
+    done
+    echo $counter
+}
+
+function subst_do {
+    orig_line="$1"
+    line="$1 "
+    res=""
+    counter=2
+    pattern='^([^&]*)&(.*)$'
+    pattern_check_none='^[,.;[:space:]].*$'
+    pattern_check_phrase='^\(.*$'
+    pattern_word='^([^,.;[:space:]]*)([,.;[:space:]].*)$'
+    pattern_phrase='^\(([^\)]+)\)(.*)$'
+    prefix=""
+    while [[ "$line" =~ $pattern ]]; do
+        left="${BASH_REMATCH[1]}"
+        right="${BASH_REMATCH[2]}"
+        if [[ "$right" =~ $pattern_check_none ]]; then
+            prefix="$prefix$left&"
+            line="$right"
+            continue
+        fi
+
+        if [[ "$right" =~ $pattern_check_phrase ]]; then
+            if ! [[ "$right" =~ $pattern_phrase ]]; then
+                error "Unterminated parentheses sequence: $orig_line"
+            fi
+        elif ! [[ "$right" =~ $pattern_word ]]; then
+            error "Fatal error during word match: $orig_line"
+        fi
+        prefix="$prefix$left"
+        name="${BASH_REMATCH[1]}"
+        line="${BASH_REMATCH[2]}"
+        res="$res$prefix[$name](${!counter})"
+        prefix=""
+        ((counter++))
+    done
+    res="$res$prefix$line"
+    echo $res
+}
+
+lines_count="${#pre_lines[@]}"
+for ((i = 0 ; i < $lines_count ; i++)); do
+    line="${pre_lines[$i]}"
+    if ! [[ "$line" =~ ^!(.*)$ ]]; then
+        echo "$line" >> "$cur_folder/demo.txt"
+        continue
+    fi
+    orig_template="${BASH_REMATCH[1]}"
+    template="$orig_template"
+    if [[ "$template" =~ ^Мелочи([0-9])$ ]]; then
+        template="${pregen[${BASH_REMATCH[1]}]}"
+    fi
+
+    need_urls=$(subst_count "$template")
+    if [[ -z "$need_urls" ]]; then
+        error "Failed to parse template"
+    fi
+
+    ((found_urls = 0))
+    urls=()
+    for ((  ; i + 1 < lines_count && found_urls < need_urls ; i++ )); do
+        url_line="${pre_lines[$i + 1]}"
+        if [[ "$url_line" =~ ^!(.*)$ ]]; then
+            break
+        fi
+
+        hpattern='^[^h]*h(.*)$'
+        while [[ "$url_line" =~ $hpattern ]]; do
+            url_line="${BASH_REMATCH[1]}"
+            url_pattern='^(ttps?://[-[:alnum:]\+&@#/%?=~_|!:,.;]*[-[:alnum:]\+&@#/%=~_|])(.*)$'
+            if [[ "$url_line" =~ $url_pattern ]]; then
+                ((++found_urls))
+                urls+=("h${BASH_REMATCH[1]}")
+                url_line="${BASH_REMATCH[2]}"
+            fi
+        done
+    done
+
+    if (( found_urls != need_urls )); then
+        error "Failed to substitute template '$orig_template':" \
+            "found $found_urls urls while needed $need_urls."
+    fi
+
+    substituted=$(subst_do "$template" "${urls[@]}")
+    if [[ -z "substituted" ]]; then
+        error "Fatal error in template substitution"
+    fi
+
+    echo "* $substituted" >> "$cur_folder/demo.txt"
+done
+
+echo "$sp_line" >> "$cur_folder/demo.txt"
+
+if kate --version &>/dev/null; then
+    kate "$cur_folder/demo.txt" &>/dev/null
+elif gedit --version &>/dev/null; then
+    gedit "$cur_folder/demo.txt" &>/dev/null
+elif vi --version &>/dev/null; then
+    vi "$cur_folder/demo.txt"
+else
+    echo "No editor was found!"
+    echo "Here is your demo file $cur_folder/demo.txt"
+    exit 0
 fi
 
 #Check doesn't have labels teamC, *sp
