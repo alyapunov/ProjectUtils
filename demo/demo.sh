@@ -407,6 +407,7 @@ done < "$cur_folder/predemo.txt"
 
 cat > "$cur_folder/demo.txt" <<- EndOfMessage
 # Для копирования markdown в google docs подойдет https://dillinger.io/.
+# (сейчас нужно будет шрифт поменять (17) и междустрочный интервал (1.5))
 ################################################################################
 
 EndOfMessage
